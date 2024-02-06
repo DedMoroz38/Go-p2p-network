@@ -1,17 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"context"
-	"encoding/binary"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
+
 	// "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -20,7 +21,9 @@ import (
 )
 
 const protocolID = "/example/1.0.0"
-const discoveryNamespace = "example"
+// const discoveryNamespace = "example"
+
+var streams []network.Stream
 
 func main() {
     // Add -peer-address flag
@@ -50,8 +53,9 @@ func main() {
     // This gets called every time a peer connects and opens a stream to this node.
     host.SetStreamHandler(protocolID, func(s network.Stream) {
         fmt.Println("new connection")
-        go writeCounter(s)
-        go readCounter(s)
+        handleStream(s)
+        go writeMessage(s)
+        go readMessage(s)
     })
 
     notifee := &discoveryNotifee{}
@@ -94,8 +98,8 @@ func main() {
         }
 
         // Start the write and read threads.
-        go writeCounter(s)
-        go readCounter(s)
+        go writeMessage(s)
+        go readMessage(s)
     }
 
     sigCh := make(chan os.Signal)
@@ -103,30 +107,46 @@ func main() {
     <-sigCh
 }
 
-func writeCounter(s network.Stream) {
-    var counter uint64
+// used to append the stream to the list of streams to pass recieved messages to all connected streams
+func handleStream(s network.Stream) {
+    streams = append(streams, s)
+}
+
+func writeMessage(s network.Stream) {
+    reader := bufio.NewReader(os.Stdin)
 
     for {
-        <-time.After(time.Second)
-        counter++
+        message, err := reader.ReadString('\n')
+        if err != nil {
+            fmt.Println("Failed to read the input:", err)
+            continue
+        }
 
-        err := binary.Write(s, binary.BigEndian, counter)
+        _, err = s.Write([]byte(message))
         if err != nil {
             panic(err)
         }
     }
 }
 
-func readCounter(s network.Stream) {
+func readMessage(s network.Stream) {
+    r := bufio.NewReader(s)
     for {
-        var counter uint64
-
-        err := binary.Read(s, binary.BigEndian, &counter)
+        message, err := r.ReadString('\n')
         if err != nil {
-            panic(err)
+            log.Println(err)
+            return
         }
 
-        fmt.Printf("Received %d from %s\n", counter, s.ID())
+        fmt.Printf("From %s\n> %s", s.ID(), message)
+
+        // Write the received message to all streams
+        for _, stream := range streams {
+            _, err := stream.Write([]byte(message))
+            if err != nil {
+                log.Println(err)
+            }
+        }
     }
 }
 
