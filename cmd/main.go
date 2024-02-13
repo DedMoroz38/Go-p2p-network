@@ -3,66 +3,20 @@ package main
 import (
 	"bufio"
 	"context"
-	"math/rand"
-	"time"
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
+
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 )
 
-const protocolID = "/chat/1.0.0"
-// const discoveryNamespace = "example"
+const ProtocolID = "/chat/1.0.0"
 
 var streams []network.Stream
-
-func main() {
-    host, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
-    if err != nil {
-        panic(err)
-    }
-    defer host.Close()
-
-    // Print this node's addresses and ID
-    fmt.Println("Addresses:", host.Addrs())
-    fmt.Println("ID:", host.ID())
-    fmt.Print("command to connect: ./p2p -peer-address ", host.Addrs()[0], "/p2p/", host.ID())
-
-    // Setup a stream handler.
-    //
-    // This gets called every time a peer connects and opens a stream to this node.
-    host.SetStreamHandler(protocolID, func(s network.Stream) {
-        fmt.Println("new connection")
-        handleStream(s)
-        go writeMessage(s)
-        go readMessage(s)
-    })
-
-    notifee := &discoveryNotifee{host}
-
-    // Setup peer discovery.
-    discoveryService := mdns.NewMdnsService(
-        host,
-        "discoverer",
-        notifee,
-    )
-    if err != nil {
-        panic(err)
-    }
-    defer discoveryService.Close()
-
-    discoveryService.Start()
-
-    sigCh := make(chan os.Signal)
-    signal.Notify(sigCh, syscall.SIGKILL, syscall.SIGINT)
-    <-sigCh
-}
 
 func handleStream(s network.Stream) {
     streams = append(streams, s)
@@ -98,26 +52,51 @@ func readMessage(s network.Stream) {
     }
 }
 
-type discoveryNotifee struct {
-    h host.Host
-}
-
-func (n *discoveryNotifee) HandlePeerFound(peerInfo peer.AddrInfo) {
-    rand.Seed(time.Now().UnixNano())
-    randomDuration := time.Duration(rand.Intn(3)) * time.Second
-
-    // Wait for the random duration
-    time.Sleep(randomDuration)
-    if err := n.h.Connect(context.Background(), peerInfo); err != nil {
-        panic(err)
+func handleDiscoveredPeer(host host.Host, peerInfo peer.AddrInfo) {
+    if peerInfo.ID < host.ID() {
+        if err := host.Connect(context.Background(), peerInfo); err != nil {
+            panic(err)
+        }
+        fmt.Println("Connected to", peerInfo.String())
+        
+        s, err := host.NewStream(context.Background(), peerInfo.ID, ProtocolID)
+        if err != nil {
+            panic(err)
+        }
+        
+        go writeMessage(s)
+        go readMessage(s)
     }
-    fmt.Println("Connected to", peerInfo.String())
-
-    s, err := n.h.NewStream(context.Background(), peerInfo.ID, protocolID)
+}
+func main() {
+    cfg := getConfig()
+    host, err := libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/%s/tcp/0", cfg.listenHost)))
     if err != nil {
         panic(err)
     }
+    defer host.Close()
 
-    go writeMessage(s)
-    go readMessage(s)
+    // Print this node's addresses and ID
+    fmt.Println("Addresses:", host.Addrs())
+    fmt.Println("ID:", host.ID())
+    fmt.Println("ProtocolID:", cfg.ProtocolID)
+
+    // This gets called every time a peer connects and opens a stream to this node.
+    host.SetStreamHandler(protocol.ID(cfg.ProtocolID), func(s network.Stream) {
+        fmt.Println("new connection")
+        handleStream(s)
+        go writeMessage(s)
+        go readMessage(s)
+    })
+
+    peerChan := initMDNS(host, "meet")
+	for { // allows multiple peers to join
+		peer := <-peerChan // will block until we discover a peer
+		if peer.ID > host.ID() {
+			// if other end peer id greater than us, don't connect to it, just wait for it to connect us
+			fmt.Println("Found peer:", peer, " id is greater than us, wait for it to connect to us")
+			continue
+		}
+        handleDiscoveredPeer(host, peer)
+	}
 }
