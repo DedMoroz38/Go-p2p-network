@@ -49,6 +49,16 @@ func readMessage(s network.Stream) {
         }
 
         fmt.Printf("From %s\n> %s", s.ID(), message)
+        for _, stream := range streams {
+            if stream.ID() != s.ID() {
+                _, err = stream.Write([]byte(message))
+                if err != nil {
+                    log.Println(err)
+                    return
+                }
+            }
+        
+        }
     }
 }
 
@@ -71,19 +81,15 @@ func handleDiscoveredPeer(host host.Host, peerInfo peer.AddrInfo) {
 func main() {
     cfg := getConfig()
     host, err := libp2p.New(libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/%s/tcp/0", cfg.listenHost)))
+    fmt.Printf("host created %s", host.ID())
     if err != nil {
         panic(err)
     }
     defer host.Close()
 
-    // Print this node's addresses and ID
-    fmt.Println("Addresses:", host.Addrs())
-    fmt.Println("ID:", host.ID())
-    fmt.Println("ProtocolID:", cfg.ProtocolID)
-
     // This gets called every time a peer connects and opens a stream to this node.
     host.SetStreamHandler(protocol.ID(cfg.ProtocolID), func(s network.Stream) {
-        fmt.Println("new connection")
+        fmt.Println("peer connected to us")
         handleStream(s)
         go writeMessage(s)
         go readMessage(s)
